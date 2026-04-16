@@ -93,4 +93,4 @@ Alternatively, deploy to Netlify, Vercel, or any static hosting — the app has 
 
 ## License
 
-MIT
+GPL 3.0

@@ -283,7 +283,7 @@ function DataPoint({ icon, label, primary, secondary, emphasis }) {
         }}>{label}</span>
       </div>
       <div style={{
-        fontFamily: emphasis ? "'Fraunces', Georgia, serif" : "'DM Sans', sans-serif",
+        fontFamily: emphasis ? "'Source Serif 4', Georgia, serif" : "'DM Sans', sans-serif",
         fontWeight: 500, fontSize: emphasis ? '1.5rem' : '1.25rem',
         color: C.ink, lineHeight: 1.1,
       }}>{primary}</div>
@@ -396,7 +396,7 @@ function AlertCard({ alert }) {
         <AlertTriangle size={18} style={{ color, flexShrink: 0, marginTop: 2 }} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{
-            fontFamily: "'Fraunces', Georgia, serif", fontWeight: 500,
+            fontFamily: "'Source Serif 4', Georgia, serif", fontWeight: 500,
             fontSize: '1.05rem', color: C.ink, lineHeight: 1.3,
           }}>{alert.event}</div>
           <div style={{
@@ -443,7 +443,7 @@ function CurrentConditions({ current, hourly, view, windPref, windUnit, sunrise,
         {/* Temperature */}
         <div>
           <div style={{
-            fontFamily: "'Fraunces', Georgia, serif", fontWeight: 300,
+            fontFamily: "'Source Serif 4', Georgia, serif", fontWeight: 400,
             fontSize: 'clamp(4rem, 14vw, 7rem)', lineHeight: 0.9,
             color: C.ink, letterSpacing: '-0.03em',
           }}>
@@ -451,7 +451,7 @@ function CurrentConditions({ current, hourly, view, windPref, windUnit, sunrise,
             <span style={{ fontSize: '0.4em', verticalAlign: 'top', marginLeft: 4, color: C.inkSoft }}>°F</span>
           </div>
           <p style={{
-            fontFamily: "'Fraunces', Georgia, serif", fontWeight: 400,
+            fontFamily: "'Source Serif 4', Georgia, serif", fontWeight: 400,
             fontStyle: 'italic', fontSize: '1.1rem', marginTop: 6, color: C.inkSoft,
           }}>{text}</p>
           {current?.dewpoint != null && (
@@ -526,7 +526,7 @@ function HourlyStrip({ hourly, windUnit, windPref }) {
                 color: C.inkFaint, letterSpacing: '0.05em',
               }}>{fmtHour(h.startTime)}</div>
               <div style={{
-                fontFamily: "'Fraunces', Georgia, serif", fontWeight: 400,
+                fontFamily: "'Source Serif 4', Georgia, serif", fontWeight: 400,
                 fontSize: '1.2rem', color: C.ink, margin: '6px 0 4px',
               }}>{h.temperature}°</div>
               <div style={{
@@ -574,16 +574,16 @@ function DayList({ days, windUnit, windPref }) {
             borderBottom: `1px solid ${C.ruleSoft}`,
           }} className="day-row">
             <div style={{
-              fontFamily: "'Fraunces', Georgia, serif", fontWeight: 500, fontSize: '1rem', color: C.ink,
+              fontFamily: "'Source Serif 4', Georgia, serif", fontWeight: 500, fontSize: '1rem', color: C.ink,
             }}>{i === 0 ? 'Today' : fmtDay(d.date)}</div>
 
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
               <span style={{
-                fontFamily: "'Fraunces', Georgia, serif", fontWeight: 400,
+                fontFamily: "'Source Serif 4', Georgia, serif", fontWeight: 400,
                 fontSize: '1.2rem', color: C.ink,
               }}>{high != null ? `${high}°` : '—'}</span>
               <span style={{
-                fontFamily: "'Fraunces', Georgia, serif", fontWeight: 300,
+                fontFamily: "'Source Serif 4', Georgia, serif", fontWeight: 400,
                 fontSize: '1rem', color: C.inkFaint,
               }}>{low != null ? `${low}°` : ''}</span>
             </div>
@@ -776,7 +776,7 @@ export default function App() {
             <CompassRose />
             <div>
               <h1 style={{
-                fontFamily: "'Fraunces', Georgia, serif", fontWeight: 500,
+                fontFamily: "'Source Serif 4', Georgia, serif", fontWeight: 500,
                 fontSize: 'clamp(1.5rem, 4vw, 2.1rem)', letterSpacing: '-0.01em',
                 lineHeight: 1, color: C.ink,
               }}>Windward Weather</h1>
@@ -869,7 +869,7 @@ export default function App() {
               <MapPin size={18} style={{ color: C.inkSoft, flexShrink: 0 }} />
               <div style={{ minWidth: 0 }}>
                 <h2 style={{
-                  fontFamily: "'Fraunces', Georgia, serif", fontWeight: 400,
+                  fontFamily: "'Source Serif 4', Georgia, serif", fontWeight: 400,
                   fontSize: 'clamp(1.3rem, 3.5vw, 1.8rem)', lineHeight: 1.1,
                   letterSpacing: '-0.01em', overflow: 'hidden',
                   textOverflow: 'ellipsis', whiteSpace: 'nowrap',

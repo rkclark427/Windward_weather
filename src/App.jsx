@@ -2,8 +2,11 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   MapPin, Star, Search, Wind, Droplets, Eye, Gauge, AlertTriangle,
   Loader2, Navigation, X, Waves, ChevronDown,
-  Sunrise, Sunset, RefreshCw, Trash2, Thermometer
+  Sunrise, Sunset, RefreshCw, Trash2, Thermometer,
+  Play, Pause, SkipForward, SkipBack
 } from 'lucide-react';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 
 // ===================== Storage keys =====================
 const K_FAVS = 'windward-weather:favorites';
@@ -619,6 +622,341 @@ function DayList({ days, windUnit, windPref }) {
   );
 }
 
+// ===================== Radar Map (RainViewer + Leaflet) =====================
+
+const RAINVIEWER_API = 'https://api.rainviewer.com/public/weather-maps.json';
+const RADAR_COLOR = 6;    // NEXRAD-style palette
+const RADAR_SMOOTH = 1;   // smoothing on
+const RADAR_SNOW = 1;     // snow overlay on
+
+function RadarMap({ lat, lon }) {
+  const mapRef = useRef(null);
+  const mapInstanceRef = useRef(null);
+  const layersRef = useRef([]);
+  const [frames, setFrames] = useState([]);
+  const [frameIdx, setFrameIdx] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const [opacity, setOpacity] = useState(0.65);
+  const [radarError, setRadarError] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const timerRef = useRef(null);
+
+  // Initialize map
+  useEffect(() => {
+    if (!mapRef.current || mapInstanceRef.current) return;
+
+    const map = L.map(mapRef.current, {
+      center: [lat, lon],
+      zoom: 8,
+      zoomControl: true,
+      attributionControl: true,
+    });
+
+    // CartoDB Positron — clean, light base map
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
+      subdomains: 'abcd',
+      maxZoom: 19,
+    }).addTo(map);
+
+    // Location marker
+    L.circleMarker([lat, lon], {
+      radius: 6, color: C.ink, fillColor: C.sea, fillOpacity: 0.9, weight: 2,
+    }).addTo(map);
+
+    mapInstanceRef.current = map;
+
+    return () => {
+      map.remove();
+      mapInstanceRef.current = null;
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Re-center when location changes
+  useEffect(() => {
+    if (mapInstanceRef.current) {
+      mapInstanceRef.current.setView([lat, lon], 8);
+    }
+  }, [lat, lon]);
+
+  // Fetch RainViewer frames
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadFrames() {
+      setLoading(true);
+      setRadarError(null);
+      try {
+        const res = await fetch(RAINVIEWER_API);
+        if (!res.ok) throw new Error(`RainViewer API ${res.status}`);
+        const data = await res.json();
+
+        const past = (data.radar?.past || []).map(f => ({
+          time: f.time,
+          path: f.path,
+          type: 'past',
+        }));
+        const nowcast = (data.radar?.nowcast || []).map(f => ({
+          time: f.time,
+          path: f.path,
+          type: 'nowcast',
+        }));
+
+        const allFrames = [...past, ...nowcast];
+        if (!cancelled && allFrames.length > 0) {
+          setFrames(allFrames);
+          setFrameIdx(past.length - 1); // start at most recent actual data
+        } else if (!cancelled) {
+          setRadarError('No radar frames available');
+        }
+      } catch (e) {
+        if (!cancelled) setRadarError(`Couldn't load radar: ${e.message}`);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    loadFrames();
+    // Refresh frame list every 5 minutes
+    const interval = setInterval(loadFrames, 5 * 60 * 1000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+
+  // Manage tile layers when frames change
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || frames.length === 0) return;
+
+    // Remove old layers
+    layersRef.current.forEach(layer => {
+      if (map.hasLayer(layer)) map.removeLayer(layer);
+    });
+
+    // Create a tile layer for each frame
+    const newLayers = frames.map((frame) => {
+      const layer = L.tileLayer(
+        `https://tilecache.rainviewer.com${frame.path}/256/{z}/{x}/{y}/${RADAR_COLOR}/${RADAR_SMOOTH}_${RADAR_SNOW}.png`,
+        {
+          tileSize: 256,
+          opacity: 0,
+          zIndex: 10,
+          attribution: '<a href="https://www.rainviewer.com/">RainViewer</a>',
+        }
+      );
+      layer.addTo(map);
+      return layer;
+    });
+
+    layersRef.current = newLayers;
+
+    // Show current frame
+    if (newLayers[frameIdx]) {
+      newLayers[frameIdx].setOpacity(opacity);
+    }
+
+    return () => {
+      newLayers.forEach(layer => {
+        if (map.hasLayer(layer)) map.removeLayer(layer);
+      });
+    };
+  }, [frames]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Update visible frame when index or opacity changes
+  useEffect(() => {
+    const layers = layersRef.current;
+    if (layers.length === 0) return;
+
+    layers.forEach((layer, i) => {
+      layer.setOpacity(i === frameIdx ? opacity : 0);
+    });
+  }, [frameIdx, opacity]);
+
+  // Animation timer
+  useEffect(() => {
+    if (!playing || frames.length === 0) {
+      clearInterval(timerRef.current);
+      return;
+    }
+
+    timerRef.current = setInterval(() => {
+      setFrameIdx(prev => {
+        const next = prev + 1;
+        if (next >= frames.length) return 0; // loop
+        return next;
+      });
+    }, 500); // 500ms per frame
+
+    return () => clearInterval(timerRef.current);
+  }, [playing, frames.length]);
+
+  // Format frame timestamp
+  function frameLabel(frame) {
+    if (!frame) return '—';
+    const d = new Date(frame.time * 1000);
+    const timeStr = d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+    return frame.type === 'nowcast' ? `${timeStr} (forecast)` : timeStr;
+  }
+
+  // Find the dividing line between past and nowcast
+  const pastCount = frames.filter(f => f.type === 'past').length;
+
+  return (
+    <section style={{ marginBottom: 40 }}>
+      <SectionHeader label="Radar" />
+
+      {radarError && (
+        <div style={{
+          padding: '12px 16px', fontSize: '0.875rem', marginBottom: 12,
+          backgroundColor: '#FBEDE8', border: `1px solid ${C.signal}`,
+          color: C.signal, borderRadius: 2,
+        }}>{radarError}</div>
+      )}
+
+      {/* Map container */}
+      <div style={{
+        border: `1px solid ${C.rule}`, borderRadius: 2, overflow: 'hidden',
+        position: 'relative',
+      }}>
+        <div
+          ref={mapRef}
+          style={{ height: 400, width: '100%', backgroundColor: C.paperSoft }}
+        />
+
+        {loading && (
+          <div style={{
+            position: 'absolute', top: 12, right: 12, zIndex: 1000,
+            display: 'flex', alignItems: 'center', gap: 6,
+            backgroundColor: 'rgba(243,236,216,0.9)', padding: '6px 10px',
+            borderRadius: 2, border: `1px solid ${C.rule}`,
+          }}>
+            <Loader2 size={12} className="animate-spin" style={{ color: C.inkFaint }} />
+            <span style={{
+              fontFamily: "'JetBrains Mono', monospace", fontSize: '0.68rem',
+              color: C.inkFaint, letterSpacing: '0.05em',
+            }}>LOADING RADAR…</span>
+          </div>
+        )}
+      </div>
+
+      {/* Controls */}
+      {frames.length > 0 && (
+        <div style={{
+          marginTop: 8, padding: '10px 12px',
+          backgroundColor: C.paperSoft, border: `1px solid ${C.rule}`,
+          borderRadius: 2,
+        }}>
+          {/* Playback row */}
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 8,
+          }}>
+            <button
+              onClick={() => setFrameIdx(prev => Math.max(0, prev - 1))}
+              style={{ padding: 4, color: C.inkSoft }}
+              title="Previous frame"
+            >
+              <SkipBack size={16} />
+            </button>
+
+            <button
+              onClick={() => setPlaying(p => !p)}
+              style={{
+                padding: 6, backgroundColor: C.ink, color: C.paper,
+                borderRadius: 2, display: 'flex', alignItems: 'center',
+              }}
+              title={playing ? 'Pause' : 'Play'}
+            >
+              {playing ? <Pause size={16} /> : <Play size={16} />}
+            </button>
+
+            <button
+              onClick={() => setFrameIdx(prev => Math.min(frames.length - 1, prev + 1))}
+              style={{ padding: 4, color: C.inkSoft }}
+              title="Next frame"
+            >
+              <SkipForward size={16} />
+            </button>
+
+            {/* Timestamp */}
+            <div style={{
+              flex: 1, textAlign: 'center',
+              fontFamily: "'JetBrains Mono', monospace",
+              fontSize: '0.82rem', color: C.ink, letterSpacing: '0.03em',
+            }}>
+              {frameLabel(frames[frameIdx])}
+            </div>
+
+            {/* Opacity control */}
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+            }}>
+              <span style={{
+                fontFamily: "'JetBrains Mono', monospace", fontSize: '0.62rem',
+                color: C.inkFaint, letterSpacing: '0.1em', textTransform: 'uppercase',
+              }}>Opacity</span>
+              <input
+                type="range" min="0.1" max="1" step="0.05"
+                value={opacity}
+                onChange={e => setOpacity(parseFloat(e.target.value))}
+                style={{ width: 60, accentColor: C.ink }}
+              />
+            </div>
+          </div>
+
+          {/* Timeline scrubber */}
+          <div style={{ marginTop: 8, position: 'relative', height: 20 }}>
+            <div style={{
+              position: 'absolute', top: 9, left: 0, right: 0,
+              height: 2, backgroundColor: C.rule,
+            }} />
+            {/* Past/nowcast divider */}
+            {pastCount > 0 && pastCount < frames.length && (
+              <div style={{
+                position: 'absolute', top: 4, height: 12, width: 1,
+                backgroundColor: C.inkFaint,
+                left: `${(pastCount / frames.length) * 100}%`,
+              }} />
+            )}
+            {/* Frame dots */}
+            {frames.map((f, i) => (
+              <button
+                key={i}
+                onClick={() => { setFrameIdx(i); setPlaying(false); }}
+                style={{
+                  position: 'absolute',
+                  top: i === frameIdx ? 4 : 6,
+                  left: `${(i / (frames.length - 1)) * 100}%`,
+                  transform: 'translateX(-50%)',
+                  width: i === frameIdx ? 12 : 6,
+                  height: i === frameIdx ? 12 : 6,
+                  borderRadius: '50%',
+                  backgroundColor: i === frameIdx ? C.ink
+                    : f.type === 'nowcast' ? C.rule : C.inkFaint,
+                  border: i === frameIdx ? `2px solid ${C.paper}` : 'none',
+                  boxShadow: i === frameIdx ? `0 0 0 1px ${C.ink}` : 'none',
+                  transition: 'all 0.15s',
+                  padding: 0,
+                }}
+                title={frameLabel(f)}
+              />
+            ))}
+          </div>
+
+          {/* Legend */}
+          <div style={{
+            display: 'flex', justifyContent: 'space-between', marginTop: 4,
+            fontFamily: "'JetBrains Mono', monospace", fontSize: '0.6rem',
+            color: C.inkFaint, letterSpacing: '0.08em', textTransform: 'uppercase',
+          }}>
+            <span>2 hours ago</span>
+            <span>Now</span>
+            {frames.some(f => f.type === 'nowcast') && <span>Forecast</span>}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 // ===================== Main App =====================
 export default function App() {
   const [loc, setLoc] = useState(null);
@@ -949,6 +1287,11 @@ export default function App() {
           </section>
         )}
 
+        {/* ===== Radar ===== */}
+        {loc && (
+          <RadarMap lat={loc.lat} lon={loc.lon} />
+        )}
+
         {/* ===== 7-day forecast ===== */}
         {data && days.length > 0 && (
           <section style={{ marginBottom: 40 }}>
@@ -964,7 +1307,7 @@ export default function App() {
               fontFamily: "'JetBrains Mono', monospace", fontSize: '0.65rem',
               color: C.inkFaint, letterSpacing: '0.12em', textTransform: 'uppercase',
             }}>
-              Data: api.weather.gov (NOAA/NWS) · Location: OpenStreetMap
+              Data: api.weather.gov (NOAA/NWS) · Radar: RainViewer · Location: OpenStreetMap
               {lastFetch && ` · Updated ${fmtTime(lastFetch)}`}
             </p>
           </footer>

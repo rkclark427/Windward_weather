@@ -35,6 +35,7 @@ const msToKnots  = (ms)  => ms == null ? null : ms * 1.94384;
 const kmhToMph   = (kmh) => kmh == null ? null : kmh * 0.621371;
 const kmhToKnots = (kmh) => kmh == null ? null : kmh * 0.539957;
 const paToInHg   = (pa)  => pa == null ? null : pa * 0.0002953;
+const paToMb     = (pa)  => pa == null ? null : pa / 100;
 const mToMi      = (m)   => m == null ? null : m * 0.000621371;
 const mphToKnots = (mph) => mph == null ? null : mph * 0.868976;
 
@@ -63,7 +64,9 @@ function fromNws(value, unitCode, preferred) {
     case 'm_s-1':
       return preferred === 'mph' ? msToMph(value) : preferred === 'knots' ? msToKnots(value) : value;
     case 'Pa':
-      return preferred === 'inHg' ? paToInHg(value) : value;
+      if (preferred === 'inHg') return paToInHg(value);
+      if (preferred === 'mb') return paToMb(value);
+      return value;
     case 'm':
       return preferred === 'mi' ? mToMi(value) : value;
     default:
@@ -205,7 +208,7 @@ function lsSet(key, value) {
 }
 
 // ===================== Derive current conditions =====================
-function deriveCurrent(o, windPref) {
+function deriveCurrent(o, windPref, pressurePref = 'inHg') {
   const temp = fromNws(o.temperature?.value, o.temperature?.unitCode, 'degF');
   const flVal = o.heatIndex?.value ?? o.windChill?.value ?? o.temperature?.value;
   const flUnit = o.heatIndex?.value != null ? o.heatIndex.unitCode
@@ -220,7 +223,7 @@ function deriveCurrent(o, windPref) {
     windDir: o.windDirection?.value,
     humidity: o.relativeHumidity?.value,
     pressure: fromNws(o.barometricPressure?.value ?? o.seaLevelPressure?.value,
-                      o.barometricPressure?.unitCode ?? o.seaLevelPressure?.unitCode, 'inHg'),
+                      o.barometricPressure?.unitCode ?? o.seaLevelPressure?.unitCode, pressurePref),
     visibility: fromNws(o.visibility?.value, o.visibility?.unitCode, 'mi'),
     text: o.textDescription || '—',
   };
@@ -426,7 +429,7 @@ function AlertCard({ alert }) {
 }
 
 // ===================== Current Conditions =====================
-function CurrentConditions({ current, hourly, view, windPref, windUnit, sunrise, sunset, isMarine }) {
+function CurrentConditions({ current, hourly, view, windPref, windUnit, sunrise, sunset, isMarine, pressureUnit }) {
   const next = hourly && hourly[0];
   const temp = current?.temp ?? next?.temperature ?? null;
   const text = current?.text ?? next?.shortForecast ?? '—';
@@ -481,8 +484,8 @@ function CurrentConditions({ current, hourly, view, windPref, windUnit, sunrise,
           <DataPoint
             icon={<Gauge size={14} />}
             label="Pressure" emphasis={isMarine}
-            primary={current?.pressure != null ? fmt(current.pressure, 2) : '—'}
-            secondary={current?.pressure != null ? 'inHg' : ''}
+            primary={current?.pressure != null ? fmt(current.pressure, isMarine ? 0 : 2) : '—'}
+            secondary={current?.pressure != null ? pressureUnit : ''}
           />
           <DataPoint
             icon={<Droplets size={14} />} label="Humidity"
@@ -958,6 +961,164 @@ function RadarMap({ lat, lon }) {
   );
 }
 
+// ===================== NOAA Tides =====================
+const NOAA_TIDES_BASE = 'https://api.tidesandcurrents.noaa.gov';
+const TIDE_MAX_DIST_MI = 150;
+
+function haversineDistMi(lat1, lon1, lat2, lon2) {
+  const R = 3958.8;
+  const toRad = x => x * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function fmtNoaaDate(d) {
+  return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+}
+
+async function fetchTideData(lat, lon) {
+  const stRes = await fetch(
+    `${NOAA_TIDES_BASE}/mdapi/prod/webapi/stations.json?type=tidepredictions&units=english`
+  );
+  if (!stRes.ok) throw new Error(`NOAA stations ${stRes.status}`);
+  const stData = await stRes.json();
+  const stations = stData.stations || [];
+
+  let nearest = null;
+  let nearestDist = Infinity;
+  for (const st of stations) {
+    const dist = haversineDistMi(lat, lon, parseFloat(st.lat), parseFloat(st.lng));
+    if (dist < nearestDist) { nearestDist = dist; nearest = st; }
+  }
+
+  if (!nearest || nearestDist > TIDE_MAX_DIST_MI) return { tooFar: true };
+
+  const today = new Date();
+  const end = new Date(today.getTime() + 2 * 86400000);
+  const url = `${NOAA_TIDES_BASE}/api/prod/datagetter` +
+    `?station=${nearest.id}&product=predictions&datum=MLLW&time_zone=lst_ldt` +
+    `&interval=hilo&units=english&application=windward_weather&format=json` +
+    `&begin_date=${fmtNoaaDate(today)}&end_date=${fmtNoaaDate(end)}`;
+
+  const predRes = await fetch(url);
+  if (!predRes.ok) throw new Error(`NOAA predictions ${predRes.status}`);
+  const predData = await predRes.json();
+  if (predData.error) throw new Error(predData.error.message);
+
+  const now = new Date();
+  const upcoming = (predData.predictions || [])
+    .filter(p => new Date(p.t.replace(' ', 'T')) > now)
+    .slice(0, 4);
+
+  return { tooFar: false, station: nearest, distMi: nearestDist, events: upcoming };
+}
+
+function TideCard({ tideResult, loading, error }) {
+  if (loading) {
+    return (
+      <section style={{ marginBottom: 40 }}>
+        <SectionHeader label="Tides" />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0', color: C.inkFaint }}>
+          <Loader2 size={14} className="animate-spin" />
+          <span style={{
+            fontFamily: "'JetBrains Mono', monospace", fontSize: '0.78rem', letterSpacing: '0.05em',
+          }}>LOCATING TIDE STATION…</span>
+        </div>
+      </section>
+    );
+  }
+
+  if (error) {
+    return (
+      <section style={{ marginBottom: 40 }}>
+        <SectionHeader label="Tides" />
+        <div style={{ fontSize: '0.875rem', color: C.inkSoft, padding: '8px 0' }}>
+          Couldn't load tide data: {error}
+        </div>
+      </section>
+    );
+  }
+
+  if (!tideResult) return null;
+
+  if (tideResult.tooFar) {
+    return (
+      <section style={{ marginBottom: 40 }}>
+        <SectionHeader label="Tides" />
+        <div style={{
+          fontFamily: "'JetBrains Mono', monospace", fontSize: '0.78rem',
+          color: C.inkFaint, letterSpacing: '0.05em', padding: '8px 0',
+        }}>No tide station near this location</div>
+      </section>
+    );
+  }
+
+  const { station, distMi, events } = tideResult;
+
+  function fmtTideTime(t) {
+    const timePart = t.split(' ')[1] || '';
+    const [h, m] = timePart.split(':').map(Number);
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+    return `${h12}:${String(m).padStart(2, '0')} ${ampm}`;
+  }
+
+  return (
+    <section style={{ marginBottom: 40 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+        <h3 style={{
+          fontFamily: "'JetBrains Mono', monospace", fontSize: '0.72rem',
+          letterSpacing: '0.2em', textTransform: 'uppercase', color: C.inkSoft,
+        }}>
+          Tides — {station.name}, {distMi.toFixed(1)} mi
+        </h3>
+        <div style={{ flex: 1, borderTop: `1px solid ${C.rule}` }} />
+      </div>
+      <div style={{
+        display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)',
+        gap: '12px 8px', backgroundColor: C.paperSoft,
+        border: `1px solid ${C.rule}`, borderRadius: 2, padding: '20px 16px',
+      }} className="tide-grid">
+        {events.length === 0 ? (
+          <div style={{
+            gridColumn: '1 / -1', textAlign: 'center',
+            fontFamily: "'JetBrains Mono', monospace", fontSize: '0.78rem', color: C.inkFaint,
+          }}>No upcoming tide events</div>
+        ) : events.map((ev, i) => {
+          const isHigh = ev.type === 'H';
+          return (
+            <div key={i} style={{ textAlign: 'center', padding: '4px 0' }}>
+              <div style={{
+                fontFamily: "'JetBrains Mono', monospace", fontSize: '0.62rem',
+                letterSpacing: '0.18em', textTransform: 'uppercase',
+                color: isHigh ? C.sea : C.inkSoft, marginBottom: 6,
+              }}>
+                {isHigh ? 'High' : 'Low'}
+              </div>
+              <div style={{
+                fontFamily: "'Source Serif 4', Georgia, serif", fontWeight: 400,
+                fontSize: '1.5rem', color: C.ink, lineHeight: 1.1,
+              }}>
+                {parseFloat(ev.v).toFixed(1)}
+                <span style={{ fontSize: '0.5em', color: C.inkSoft, marginLeft: 2, verticalAlign: 'middle' }}>ft</span>
+              </div>
+              <div style={{
+                fontFamily: "'JetBrains Mono', monospace", fontSize: '0.7rem',
+                color: C.inkFaint, marginTop: 6,
+              }}>
+                {fmtTideTime(ev.t)}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 // ===================== Main App =====================
 export default function App() {
   const [loc, setLoc] = useState(null);
@@ -970,6 +1131,9 @@ export default function App() {
   const [err, setErr] = useState(null);
   const [data, setData] = useState(null);
   const [lastFetch, setLastFetch] = useState(null);
+  const [tideResult, setTideResult] = useState(null);
+  const [tideLoading, setTideLoading] = useState(false);
+  const [tideErr, setTideErr] = useState(null);
 
   // Initial load
   useEffect(() => {
@@ -987,6 +1151,19 @@ export default function App() {
     lsSet(K_LAST, loc);
     fetchWeather(loc);
   }, [loc?.lat, loc?.lon]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Fetch tide data in marine mode
+  useEffect(() => {
+    if (!loc || view !== 'marine') { setTideResult(null); return; }
+    let cancelled = false;
+    setTideLoading(true);
+    setTideErr(null);
+    setTideResult(null);
+    fetchTideData(loc.lat, loc.lon)
+      .then(r => { if (!cancelled) { setTideResult(r); setTideLoading(false); } })
+      .catch(e => { if (!cancelled) { setTideErr(e.message); setTideLoading(false); } });
+    return () => { cancelled = true; };
+  }, [loc?.lat, loc?.lon, view]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- Location detection ----
   const detectLocation = useCallback(async () => {
@@ -1091,7 +1268,9 @@ export default function App() {
   const isMarine = view === 'marine';
   const windUnit = isMarine ? 'kt' : 'mph';
   const windPref = isMarine ? 'knots' : 'mph';
-  const current = data?.observation ? deriveCurrent(data.observation, windPref) : null;
+  const pressurePref = isMarine ? 'mb' : 'inHg';
+  const pressureUnit = isMarine ? 'mb' : 'inHg';
+  const current = data?.observation ? deriveCurrent(data.observation, windPref, pressurePref) : null;
   const hourly24 = (data?.hourly || []).slice(0, 24);
   const days = consolidateForecast(data?.forecast || []);
 
@@ -1277,7 +1456,13 @@ export default function App() {
             current={current} hourly={hourly24}
             view={view} windPref={windPref} windUnit={windUnit}
             sunrise={data.sunrise} sunset={data.sunset} isMarine={isMarine}
+            pressureUnit={pressureUnit}
           />
+        )}
+
+        {/* ===== Tides (marine mode only) ===== */}
+        {isMarine && (
+          <TideCard tideResult={tideResult} loading={tideLoading} error={tideErr} />
         )}
 
         {/* ===== Next 24 hours ===== */}
@@ -1308,7 +1493,7 @@ export default function App() {
               fontFamily: "'JetBrains Mono', monospace", fontSize: '0.65rem',
               color: C.inkFaint, letterSpacing: '0.12em', textTransform: 'uppercase',
             }}>
-              Data: api.weather.gov (NOAA/NWS) · Radar: RainViewer · Location: OpenStreetMap
+              Data: api.weather.gov (NOAA/NWS) · Tides: tidesandcurrents.noaa.gov · Radar: RainViewer · Location: OpenStreetMap
               {lastFetch && ` · Updated ${fmtTime(lastFetch)}`}
             </p>
           </footer>
@@ -1320,6 +1505,7 @@ export default function App() {
         @media (max-width: 640px) {
           .conditions-grid { grid-template-columns: 1fr !important; }
           .day-row { grid-template-columns: 50px 70px 1fr auto !important; gap: 4px 8px !important; }
+          .tide-grid { grid-template-columns: repeat(2, 1fr) !important; }
         }
       `}</style>
     </div>

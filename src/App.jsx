@@ -647,7 +647,7 @@ function RadarMap({ lat, lon }) {
 
     const map = L.map(mapRef.current, {
       center: [lat, lon],
-      zoom: 8,
+      zoom: 7,
       zoomControl: true,
       attributionControl: true,
     });
@@ -740,6 +740,7 @@ function RadarMap({ lat, lon }) {
           tileSize: 256,
           opacity: 0,
           zIndex: 10,
+          maxZoom: 7,
           attribution: '<a href="https://www.rainviewer.com/">RainViewer</a>',
         }
       );
